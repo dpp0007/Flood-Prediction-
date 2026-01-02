@@ -1,0 +1,30 @@
+{
+  "data_type": "cwc_hydrograph",
+  "timestamp": "2026-01-02T05:04:33.893718",
+  "record_count": 16800,
+  "unique_stations": 100,
+  "unique_basins": 17,
+  "unique_states": 24,
+  "source": "Central Water Commission (CWC), Government of India",
+  "source_url": "https://inf.cwc.gov.in/",
+  "disclaimer": "This system does NOT replace official CWC flood warnings. Intended for academic, research, and demonstration use only.",
+  "columns": [
+    "station_id",
+    "station_name",
+    "river_name",
+    "basin",
+    "state",
+    "district",
+    "latitude",
+    "longitude",
+    "division",
+    "site_type",
+    "current_level",
+    "warning_level",
+    "danger_level",
+    "highest_flood_level",
+    "trend",
+    "timestamp",
+    "source_url"
+  ]
+}

@@ -1,0 +1,91 @@
+# Flood Early Warning System Configuration
+# Data Source: Central Water Commission (CWC), Government of India
+# Website: https://inf.cwc.gov.in/
+
+# Data Acquisition Settings
+data_acquisition:
+  cwc_base_url: "https://inf.cwc.gov.in"
+  scrape_interval_minutes: 30  # Respect server load
+  request_timeout_seconds: 10
+  max_retries: 3
+  retry_backoff_factor: 2
+  cache_dir: "data/cache"
+  cache_ttl_hours: 24
+  user_agent: "Flood-Warning-System/1.0 (Research Purpose)"
+
+# Data Engineering Settings
+data_engineering:
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  validation_rules:
+    max_water_level_jump_meters: 2.0  # Detect sensor errors
+    min_valid_level: -10.0
+    max_valid_level: 100.0
+  missing_value_strategy: "interpolate"  # or "drop"
+
+# Feature Engineering Settings
+features:
+  lookback_hours: 24
+  rate_of_rise_window_hours: 3
+  historical_percentile_window_days: 365
+  basin_aggregation: true
+  feature_scaling: "standard"  # or "minmax"
+
+# Model Training Settings
+models:
+  test_split_ratio: 0.2
+  validation_split_ratio: 0.1
+  random_state: 42
+  
+  risk_regressor:
+    model_type: "gradient_boosting"  # or "random_forest"
+    hyperparams:
+      n_estimators: 100
+      max_depth: 8
+      learning_rate: 0.1
+  
+  warning_classifier:
+    model_type: "gradient_boosting"  # or "logistic_regression"
+    hyperparams:
+      n_estimators: 100
+      max_depth: 6
+      learning_rate: 0.1
+    warning_threshold_hours: 6  # Predict if crossing threshold in next N hours
+  
+  risk_tier_classifier:
+    model_type: "gradient_boosting"
+    hyperparams:
+      n_estimators: 100
+      max_depth: 7
+      learning_rate: 0.1
+
+# Risk Tier Thresholds (0-1 scale)
+risk_tiers:
+  low_risk_max: 0.33
+  medium_risk_max: 0.67
+  high_risk_min: 0.67
+
+# Inference Settings
+inference:
+  model_dir: "data/models"
+  batch_size: 1000
+  generate_explanations: true
+  explanation_top_features: 5
+
+# Logging
+logging:
+  level: "INFO"
+  log_file: "logs/flood_warning.log"
+  log_format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Autonomous Scheduler Settings
+scheduler:
+  enabled: true
+  interval_minutes: 30  # Execute pipeline every 30 minutes
+  mode: "autonomous"    # "autonomous" or "single"
+
+# Alert Settings
+alerts:
+  enabled: true
+  high_risk_alerts: true
+  alerts_dir: "data/outputs/alerts"
