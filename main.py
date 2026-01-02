@@ -21,13 +21,24 @@ import argparse
 from typing import Dict
 
 from src.utils.logger import setup_logger
-from src.utils.constants import RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR, FEATURE_NAMES
+from src.utils.constants import RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR, FEATURE_NAMES, WEATHER_ENABLED
 from src.utils.output_manager import OutputManager
 from src.data_engineering import DataCleaner
 from src.features import FeatureGenerator
 from src.models import ModelTrainer
 from src.inference import FloodPredictor, AlertGenerator
 from src.explainability import ExplanationGenerator
+
+# Weather-aware imports (NEW - OPTIONAL)
+try:
+    from src.weather.gfs_fetcher import GFSFetcher
+    from src.features.weather_aware_feature_generator import WeatherAwareFeatureGenerator
+    from src.inference.weather_aware_predictor import WeatherAwarePredictor
+    WEATHER_AVAILABLE = True
+except ImportError:
+    WEATHER_AVAILABLE = False
+    logger_temp = setup_logger(__name__)
+    logger_temp.warning("Weather modules not available, will use hydro-only mode")
 
 logger = setup_logger(__name__)
 
@@ -37,16 +48,44 @@ class CompleteFloodPredictionPipeline:
     Complete end-to-end flood prediction pipeline with explicit output management.
     """
     
-    def __init__(self):
-        """Initialize pipeline."""
+    def __init__(self, use_weather_aware: bool = True):
+        """
+        Initialize pipeline.
+        
+        Args:
+            use_weather_aware: If True, try to use weather-aware mode (GFS + hydro)
+                              If False, use hydro-only mode (backward compatible)
+        """
         self.cleaner = DataCleaner()
-        self.feature_gen = FeatureGenerator()
         self.trainer = ModelTrainer()
-        self.predictor = FloodPredictor()
         self.alert_gen = AlertGenerator()
         self.explainer = ExplanationGenerator()
         self.output_manager = OutputManager()
-        logger.info("Complete Pipeline initialized")
+        
+        # Determine mode
+        self.use_weather_aware = use_weather_aware and WEATHER_AVAILABLE and WEATHER_ENABLED
+        
+        if self.use_weather_aware:
+            self.feature_gen = WeatherAwareFeatureGenerator()
+            self.predictor_class = WeatherAwarePredictor
+            self.mode = "WEATHER-AWARE (GFS + Hydro)"
+            self.gfs_fetcher = GFSFetcher(cache_dir=Path("data/cache"))
+            logger.info("[WEATHER-AWARE MODE ENABLED]")
+            logger.info("   - Using GFS rainfall forecasts")
+            logger.info("   - Using 17 features (10 hydro + 7 weather)")
+            logger.info("   - Multi-horizon predictions (now, +6h, +24h)")
+        else:
+            self.feature_gen = FeatureGenerator()
+            self.predictor_class = FloodPredictor
+            self.mode = "HYDRO-ONLY (Backward Compatible)"
+            self.gfs_fetcher = None
+            logger.info("[HYDRO-ONLY MODE]")
+            logger.info("   - Using 10 hydrological features only")
+            logger.info("   - No weather data")
+            logger.info("   - Current risk predictions only")
+        
+        self.predictor = None  # Will be initialized later
+        logger.info(f"Complete Pipeline initialized in {self.mode} mode")
     
     def load_raw_data(self, csv_path: str) -> pd.DataFrame:
         """Load raw CWC data from CSV."""
@@ -81,17 +120,49 @@ class CompleteFloodPredictionPipeline:
         """Generate ML features."""
         logger.info("\n" + "="*70)
         logger.info("STEP 2: FEATURE ENGINEERING")
+        logger.info(f"MODE: {self.mode}")
         logger.info("="*70)
         
         # Prepare data for feature generator
+        # Include latitude and longitude if available (for GFS weather integration)
+        station_cols = ['station_id', 'station_name', 'river_name', 'basin', 'state']
+        if 'latitude' in cleaned_data.columns and 'longitude' in cleaned_data.columns:
+            station_cols.extend(['latitude', 'longitude'])
+        
         data_dict = {
-            'stations': cleaned_data[['station_id', 'station_name', 'river_name', 'basin', 'state']].drop_duplicates(),
+            'stations': cleaned_data[station_cols].drop_duplicates(),
             'levels': cleaned_data
         }
         
-        features = self.feature_gen.generate(data_dict)
+        # Generate features (with or without weather data)
+        weather_data = None
+        if self.use_weather_aware:
+            try:
+                logger.info("Fetching GFS rainfall forecasts...")
+                # Check if latitude and longitude are available
+                if 'latitude' in data_dict['stations'].columns and 'longitude' in data_dict['stations'].columns:
+                    stations = data_dict['stations'][['station_id', 'latitude', 'longitude']].drop_duplicates()
+                    weather_data = self.gfs_fetcher.fetch_rainfall_forecast(stations, forecast_hours=24)
+                    
+                    if weather_data is not None and not weather_data.empty:
+                        logger.info(f"[GFS DATA FETCHED] for {len(weather_data)} stations")
+                    else:
+                        logger.warning("[WARNING] GFS fetch returned empty, falling back to hydro-only")
+                        weather_data = None
+                else:
+                    logger.warning("[WARNING] Latitude/longitude not available in data, falling back to hydro-only")
+                    weather_data = None
+            except Exception as e:
+                logger.warning(f"[WARNING] GFS fetch failed: {str(e)}, falling back to hydro-only")
+                weather_data = None
+            
+            features = self.feature_gen.generate(data_dict, weather_data=weather_data)
+        else:
+            features = self.feature_gen.generate(data_dict)
+        
         logger.info(f"Generated features shape: {features.shape}")
-        logger.info(f"Feature columns: {[col for col in FEATURE_NAMES if col in features.columns]}")
+        logger.info(f"Feature count: {len(features.columns)}")
+        logger.info(f"Feature columns: {list(features.columns)[:5]}... (showing first 5)")
         
         # Save features
         features_path = self.output_manager.save_features(features)
@@ -101,6 +172,7 @@ class CompleteFloodPredictionPipeline:
             {
                 'Feature records': len(features),
                 'Feature count': len(features.columns),
+                'Mode': self.mode,
                 'Saved to': features_path,
             }
         )
@@ -200,17 +272,33 @@ class CompleteFloodPredictionPipeline:
         
         return results
     
-    def generate_predictions(self, features: pd.DataFrame) -> pd.DataFrame:
+    def generate_predictions(self, features: pd.DataFrame, weather_data: pd.DataFrame = None) -> pd.DataFrame:
         """Generate predictions using trained models."""
         logger.info("\n" + "="*70)
         logger.info("STEP 5: INFERENCE")
+        logger.info(f"MODE: {self.mode}")
         logger.info("="*70)
         
         # Reload predictor to get trained models
-        self.predictor = FloodPredictor(model_dir=str(MODELS_DIR))
+        if self.use_weather_aware:
+            self.predictor = WeatherAwarePredictor(model_dir=str(MODELS_DIR))
+            predictions = self.predictor.predict_with_weather(features, weather_data=weather_data)
+            logger.info(f"[PREDICTIONS GENERATED] {len(predictions)} predictions in WEATHER-AWARE mode")
+            
+            # Log prediction mode
+            if 'prediction_mode' in predictions.columns:
+                actual_mode = predictions['prediction_mode'].iloc[0]
+                logger.info(f"Actual prediction mode: {actual_mode}")
+                if actual_mode == "WEATHER-AWARE":
+                    logger.info("[SUCCESS] Using GFS weather data")
+                else:
+                    logger.info("[WARNING] Fell back to HYDRO-ONLY (weather data unavailable)")
+        else:
+            self.predictor = FloodPredictor(model_dir=str(MODELS_DIR))
+            predictions = self.predictor.predict_all(features)
+            logger.info(f"[PREDICTIONS GENERATED] {len(predictions)} predictions in HYDRO-ONLY mode")
         
-        predictions = self.predictor.predict_all(features)
-        logger.info(f"Generated predictions: {predictions.shape}")
+        logger.info(f"Predictions shape: {predictions.shape}")
         
         # Save predictions table
         predictions_table_path = self.output_manager.save_predictions_table(predictions)
@@ -245,6 +333,7 @@ class CompleteFloodPredictionPipeline:
         """Run complete pipeline."""
         logger.info("\n" + "="*70)
         logger.info("FLOOD EARLY WARNING PREDICTION SYSTEM")
+        logger.info(f"MODE: {self.mode}")
         logger.info("="*70)
         logger.info(f"Data Source: Central Water Commission (CWC), Government of India")
         logger.info(f"Website: https://ffs.india-water.gov.in/")
@@ -252,7 +341,8 @@ class CompleteFloodPredictionPipeline:
         
         results = {
             'timestamp': datetime.utcnow().isoformat(),
-            'status': 'failed'
+            'status': 'failed',
+            'mode': self.mode,
         }
         
         try:
@@ -290,8 +380,21 @@ class CompleteFloodPredictionPipeline:
             training_results = self.train_models(features, labels)
             results['training_metrics'] = training_results
             
+            # Fetch weather data if weather-aware mode
+            weather_data = None
+            if self.use_weather_aware and self.gfs_fetcher:
+                try:
+                    if 'latitude' in cleaned_data.columns and 'longitude' in cleaned_data.columns:
+                        stations = cleaned_data[['station_id', 'latitude', 'longitude']].drop_duplicates()
+                        weather_data = self.gfs_fetcher.fetch_rainfall_forecast(stations)
+                    else:
+                        logger.warning("Latitude/longitude not available for GFS fetch")
+                except Exception as e:
+                    logger.warning(f"Weather data fetch failed: {e}")
+                    weather_data = None
+            
             # Generate predictions
-            predictions = self.generate_predictions(features)
+            predictions = self.generate_predictions(features, weather_data=weather_data)
             results['prediction_records'] = len(predictions)
             
             # Get station metadata (include latitude, longitude, district)
@@ -386,7 +489,18 @@ def main():
         help='Path to CWC hydrograph CSV file (auto-detects latest if not specified)'
     )
     
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['weather-aware', 'hydro-only'],
+        default='weather-aware',
+        help='Prediction mode: weather-aware (GFS + hydro) or hydro-only (default: weather-aware)'
+    )
+    
     args = parser.parse_args()
+    
+    # Determine if weather-aware mode
+    use_weather_aware = (args.mode == 'weather-aware')
     
     # Find data file
     if args.data_file:
@@ -406,9 +520,10 @@ def main():
         data_file = str(sorted(raw_files)[-1])
     
     logger.info(f"Using data file: {data_file}")
+    logger.info(f"Using mode: {args.mode.upper()}")
     
     # Run pipeline
-    pipeline = CompleteFloodPredictionPipeline()
+    pipeline = CompleteFloodPredictionPipeline(use_weather_aware=use_weather_aware)
     results = pipeline.run(data_file)
     
     # Validate outputs

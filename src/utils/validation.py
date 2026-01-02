@@ -151,11 +151,11 @@ class OutputValidator:
             
             if is_valid:
                 valid_count += 1
-                logger.debug(f"✓ Valid: {json_file.name}")
+                logger.debug(f"[VALID] {json_file.name}")
             else:
                 invalid_count += 1
                 errors_by_file[json_file.name] = errors
-                logger.warning(f"✗ Invalid: {json_file.name}")
+                logger.warning(f"[INVALID] {json_file.name}")
                 for error in errors:
                     logger.warning(f"  - {error}")
         
@@ -244,14 +244,14 @@ class OutputValidator:
         
         for filename, info in csv_report['files'].items():
             if info['valid']:
-                print(f"  ✓ {filename}: {info['records']} records, {info['columns']} columns")
+                print(f"  [OK] {filename}: {info['records']} records, {info['columns']} columns")
             else:
-                print(f"  ✗ {filename}: {info['error']}")
+                print(f"  [ERROR] {filename}: {info['error']}")
         
         print("\nOVERALL STATUS:")
         if json_report['valid'] and csv_report['valid']:
-            print("  ✓ ALL OUTPUTS VALID")
+            print("  [OK] ALL OUTPUTS VALID")
         else:
-            print("  ✗ VALIDATION FAILED")
+            print("  [ERROR] VALIDATION FAILED")
         
         print("="*70 + "\n")

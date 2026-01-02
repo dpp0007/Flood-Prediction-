@@ -14,3 +14,8 @@ shap==0.43.0
 tqdm==4.66.1
 pytz==2024.1
 python-dateutil==2.8.2
+
+# Weather data integration (optional)
+xarray==2024.1.1
+netCDF4==1.6.5
+scipy==1.11.4

@@ -436,7 +436,13 @@ class OutputManager:
     def _build_prediction_json(self, row: pd.Series, location_data: Dict,
                                station_id: str) -> Dict[str, Any]:
         """
-        Build standardized prediction JSON from row data.
+        Build GFS-aware prediction JSON from row data.
+        
+        Includes:
+        - forecast_signal: GFS weather data
+        - risk_adjustment: How GFS affects risk
+        - confidence: Combined model + forecast confidence
+        - time_context: Forecast horizon and windows
         
         Args:
             row: Prediction row
@@ -444,80 +450,141 @@ class OutputManager:
             station_id: Station identifier
             
         Returns:
-            Standardized prediction dictionary
+            GFS-aware prediction dictionary
         """
-        risk_score = float(row.get('risk_score', 0.0))
-        warning_prob = float(row.get('warning_probability', 0.0))
-        risk_tier = str(row.get('risk_tier_name', 'unknown')).lower()
+        from src.utils.weather_output_manager import WeatherAwareOutputManager
         
-        # Determine flood probability (use risk_score, not warning_probability)
-        # risk_score is more reliable as it's the continuous risk prediction
-        flood_probability = risk_score
+        # Check if weather data is available
+        has_weather = (
+            'rainfall_forecast_next_6h_mm' in row and 
+            row['rainfall_forecast_next_6h_mm'] is not None and
+            row['rainfall_forecast_next_6h_mm'] > 0
+        )
         
-        # Determine risk level
-        if risk_tier == 'high':
-            risk_level = 'HIGH'
-        elif risk_tier == 'medium':
-            risk_level = 'MEDIUM'
+        if has_weather:
+            # Use GFS-aware JSON format
+            prediction_json = WeatherAwareOutputManager.build_gfs_aware_json(
+                row, location_data, station_id
+            )
+            
+            # Add explanations
+            risk_level = prediction_json['prediction']['risk_level']
+            explanations = self._generate_explanations(row, risk_level)
+            prediction_json['explanation'] = explanations
+            
+            return prediction_json
         else:
-            risk_level = 'LOW'
-        
-        # Model confidence (average of risk score and warning probability)
-        model_confidence = (risk_score + warning_prob) / 2.0
-        
-        # Generate explanations
-        explanations = self._generate_explanations(row, risk_level)
-        
-        # Check for demo mode metadata
-        demo_mode = row.get('demo_mode', False)
-        alert_mode = row.get('alert_mode', 'natural')
-        
-        # Add demo explanation if forced alert
-        if demo_mode and alert_mode in ['forced_high', 'forced_medium']:
-            explanations.append("Risk level elevated artificially for demonstration/testing purposes.")
-        
-        # Prediction time and validity
-        prediction_time = datetime.utcnow()
-        valid_until = prediction_time + timedelta(hours=6)
-        
-        # Build JSON structure
-        prediction_json = {
-            'prediction': {
-                'flood_probability': round(flood_probability, 4),
-                'risk_level': risk_level,
-            },
-            'confidence': {
-                'model_confidence': round(model_confidence, 4),
-            },
-            'explanation': explanations,
-            'context': {
-                'location': location_data or {
-                    'district': 'Unknown',
-                    'state': 'Unknown',
-                    'latitude': 0.0,
-                    'longitude': 0.0,
+            # Use standard JSON format (backward compatible)
+            risk_score = float(row.get('risk_score', 0.0))
+            warning_prob = float(row.get('warning_probability', 0.0))
+            risk_tier = str(row.get('risk_tier_name', 'unknown')).lower()
+            
+            # Determine flood probability
+            flood_probability = risk_score
+            
+            # Determine risk level
+            if risk_tier == 'high':
+                risk_level = 'HIGH'
+            elif risk_tier == 'medium':
+                risk_level = 'MEDIUM'
+            else:
+                risk_level = 'LOW'
+            
+            # Model confidence
+            model_confidence = (risk_score + warning_prob) / 2.0
+            
+            # Check if weather data is available
+            has_weather = (
+                'rainfall_forecast_next_6h_mm' in row and 
+                row['rainfall_forecast_next_6h_mm'] is not None and
+                row['rainfall_forecast_next_6h_mm'] > 0
+            )
+            
+            # Calculate forecast support if weather data available
+            if has_weather:
+                rainfall_24h = float(row.get('rainfall_forecast_next_24h_mm', 0))
+                forecast_support = min(rainfall_24h / 100.0, 1.0)  # Normalize to 0-1
+                combined_confidence = (model_confidence + forecast_support) / 2.0
+            else:
+                forecast_support = 0.0
+                combined_confidence = model_confidence / 2.0
+            
+            # Generate explanations
+            explanations = self._generate_explanations(row, risk_level)
+            
+            # Check for demo mode metadata
+            demo_mode = row.get('demo_mode', False)
+            alert_mode = row.get('alert_mode', 'natural')
+            
+            # Add demo explanation if forced alert
+            if demo_mode and alert_mode in ['forced_high', 'forced_medium']:
+                explanations.append("Risk level elevated artificially for demonstration/testing purposes.")
+            
+            # Prediction time and validity
+            prediction_time = datetime.utcnow()
+            valid_until = prediction_time + timedelta(hours=6)
+            
+            # Build JSON structure (Coordination Agent schema compliant)
+            prediction_json = {
+                'prediction': {
+                    'flood_probability': round(flood_probability, 4),
+                    'risk_level': risk_level,
                 },
-                'time_window': {
-                    'prediction_time': prediction_time.isoformat() + 'Z',
-                    'valid_until': valid_until.isoformat() + 'Z',
+                'confidence': {
+                    'model_confidence': round(model_confidence, 4),
+                    'forecast_support': round(forecast_support, 4),
+                    'combined_confidence': round(combined_confidence, 4),
+                },
+                'context': {
+                    'location': location_data or {
+                        'district': 'Unknown',
+                        'state': 'Unknown',
+                        'latitude': 0.0,
+                        'longitude': 0.0,
+                    },
+                    'time_window': {
+                        'prediction_time': prediction_time.isoformat() + 'Z',
+                        'valid_until': valid_until.isoformat() + 'Z',
+                    }
+                },
+                'explanation': explanations,
+                'metadata': {
+                    'model_type': 'ml_hybrid',
+                    'model_version': '1.0',
+                    'data_sources': ['Central Water Commission (CWC), Government of India'],
+                    'disclaimer': 'For research and demonstration purposes only. Does NOT replace official CWC flood warnings.',
                 }
-            },
-            'metadata': {
-                'model_type': 'ml_hybrid',
-                'model_version': '1.0',
-                'data_source': ['Central Water Commission (CWC), Government of India'],
-                'disclaimer': 'For research and demonstration purposes only. Does NOT replace official CWC flood warnings.',
-                'demo_mode': demo_mode,
-                'alert_mode': alert_mode,
             }
-        }
-        
-        # Add real values to metadata if in demo mode
-        if demo_mode and row.get('real_risk_score') is not None:
-            prediction_json['metadata']['real_risk_score'] = round(float(row.get('real_risk_score', 0)), 4)
-            prediction_json['metadata']['real_risk_level'] = str(row.get('real_risk_level', 'UNKNOWN')).upper()
-        
-        return prediction_json
+            
+            # Add forecast_signal if weather data available
+            if has_weather:
+                rainfall_last_6h = float(row.get('rainfall_last_6h_mm', 0))
+                rainfall_6h = float(row.get('rainfall_forecast_next_6h_mm', 0))
+                rainfall_24h = float(row.get('rainfall_forecast_next_24h_mm', 0))
+                
+                # Determine rainfall trend
+                if rainfall_6h > rainfall_last_6h * 1.5:
+                    rainfall_trend = "INCREASING"
+                elif rainfall_6h < rainfall_last_6h * 0.5:
+                    rainfall_trend = "DECREASING"
+                else:
+                    rainfall_trend = "STABLE"
+                
+                prediction_json['forecast_signal'] = {
+                    'source': 'GFS',
+                    'forecast_horizon_hours': 24,
+                    'rainfall_trend': rainfall_trend,
+                }
+                
+                # Add GFS to data sources
+                prediction_json['metadata']['data_sources'].append('NOAA GFS')
+            
+            # Add real values to metadata if in demo mode
+            if demo_mode and row.get('real_risk_score') is not None:
+                prediction_json['metadata']['real_risk_score'] = round(float(row.get('real_risk_score', 0)), 4)
+                prediction_json['metadata']['real_risk_level'] = str(row.get('real_risk_level', 'UNKNOWN')).upper()
+            
+            return prediction_json
     
     def _generate_explanations(self, row: pd.Series, risk_level: str) -> List[str]:
         """
@@ -736,7 +803,7 @@ class OutputManager:
         
         print("\nDirectories:")
         for dir_name, info in report['directories'].items():
-            status = "✓" if info['exists'] else "✗"
+            status = "[OK]" if info['exists'] else "[ERROR]"
             print(f"  {status} {dir_name}: {info['path']}")
         
         print("\nFiles:")

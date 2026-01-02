@@ -190,6 +190,13 @@ class FloodPredictor:
             if col in features.columns:
                 results[col] = features[col].values
         
+        # Add weather columns if available
+        weather_cols = ['rainfall_last_6h_mm', 'rainfall_forecast_next_6h_mm', 'rainfall_forecast_next_24h_mm',
+                       'rainfall_intensity_trend', 'rainfall_runoff_index', 'saturation_proxy', 'compound_risk_index']
+        for col in weather_cols:
+            if col in features.columns:
+                results[col] = features[col].values
+        
         logger.info(f"Predictions complete. Shape: {results.shape}")
         
         return results

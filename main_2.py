@@ -47,9 +47,10 @@ class DemoFloodPredictionPipeline:
     - Detects if MEDIUM/HIGH alerts exist
     - If none exist: artificially raises top stations to demonstrate alerts
     - All forced alerts are transparently marked
+    - WEATHER-AWARE mode: Uses GFS rainfall forecasts
     """
     
-    def __init__(self):
+    def __init__(self, use_weather_aware: bool = True):
         """Initialize pipeline."""
         self.cleaner = DataCleaner()
         self.feature_gen = FeatureGenerator()
@@ -61,6 +62,27 @@ class DemoFloodPredictionPipeline:
         self.demo_mode_active = False
         self.forced_high_count = 0
         self.forced_medium_count = 0
+        
+        # Weather-aware mode
+        self.use_weather_aware = use_weather_aware
+        if use_weather_aware:
+            try:
+                from src.weather.gfs_fetcher import GFSFetcher
+                from src.features.weather_aware_feature_generator import WeatherAwareFeatureGenerator
+                from src.inference.weather_aware_predictor import WeatherAwarePredictor
+                
+                self.feature_gen = WeatherAwareFeatureGenerator()
+                self.predictor_class = WeatherAwarePredictor
+                self.gfs_fetcher = GFSFetcher(cache_dir=Path("data/cache"))
+                
+                logger.info("[WEATHER-AWARE MODE ENABLED]")
+                logger.info("   - Using GFS rainfall forecasts")
+                logger.info("   - Using 17 features (10 hydro + 7 weather)")
+                logger.info("   - Multi-horizon predictions (now, +6h, +24h)")
+            except ImportError:
+                logger.warning("[WARNING] Weather modules not available, using hydro-only mode")
+                self.use_weather_aware = False
+        
         logger.info("Demo Pipeline initialized (main_2.py)")
     
     def load_raw_data(self, csv_path: str) -> pd.DataFrame:
@@ -97,7 +119,52 @@ class DemoFloodPredictionPipeline:
         logger.info("\n" + "="*70)
         logger.info("STEP 2: FEATURE ENGINEERING")
         logger.info("="*70)
+        if self.use_weather_aware:
+            logger.info("MODE: WEATHER-AWARE (GFS + Hydro)")
+        else:
+            logger.info("MODE: HYDRO-ONLY")
+        logger.info("="*70)
         
+        # Generate features (with or without weather data)
+        weather_data = None
+        if self.use_weather_aware:
+            try:
+                logger.info("Fetching GFS rainfall forecasts...")
+                # Check if latitude and longitude are available
+                if 'latitude' in cleaned_data.columns and 'longitude' in cleaned_data.columns:
+                    stations = cleaned_data[['station_id', 'latitude', 'longitude']].drop_duplicates()
+                    weather_data = self.gfs_fetcher.fetch_rainfall_forecast(stations, forecast_hours=24)
+                    
+                    if weather_data is not None and not weather_data.empty:
+                        logger.info(f"[GFS DATA FETCHED] for {len(weather_data)} stations")
+                    else:
+                        logger.warning("[WARNING] GFS fetch returned empty, falling back to hydro-only")
+                        weather_data = None
+                else:
+                    logger.warning("[WARNING] Latitude/longitude not available in data, falling back to hydro-only")
+                    weather_data = None
+            except Exception as e:
+                logger.warning(f"[WARNING] GFS fetch failed: {str(e)}, falling back to hydro-only")
+                weather_data = None
+            
+            features = self.feature_gen.generate(cleaned_data, weather_data=weather_data)
+        else:
+            features = self.feature_gen.generate(cleaned_data)
+        
+        logger.info(f"Generated features shape: {features.shape}")
+        
+        # Save features
+        features_path = self.output_manager.save_features(features)
+        
+        self.output_manager.print_pipeline_summary(
+            "Feature Engineering",
+            {
+                'Feature records': len(features),
+                'Saved to': features_path,
+            }
+        )
+        
+        return features
         # Prepare data for feature generator
         data_dict = {
             'stations': cleaned_data[['station_id', 'station_name', 'river_name', 'basin', 'state']].drop_duplicates(),
@@ -507,7 +574,7 @@ def main():
     logger.info(f"Using data file: {data_file}")
     
     # Run pipeline
-    pipeline = DemoFloodPredictionPipeline()
+    pipeline = DemoFloodPredictionPipeline(use_weather_aware=True)
     results = pipeline.run(data_file)
     
     # Validate outputs

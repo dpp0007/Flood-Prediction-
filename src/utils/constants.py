@@ -65,7 +65,7 @@ WARNING_THRESHOLD_HOURS = 6
 # Feature importance
 TOP_FEATURES_FOR_EXPLANATION = 5
 
-# Feature names for ML models
+# Feature names for ML models (HYDRO-ONLY)
 FEATURE_NAMES = [
     "current_level",
     "distance_to_warning",
@@ -79,6 +79,27 @@ FEATURE_NAMES = [
     "seasonal_factor",
 ]
 
+# Weather-aware feature names (OPTIONAL)
+WEATHER_FEATURE_NAMES = [
+    "rainfall_last_6h_mm",
+    "rainfall_forecast_next_6h_mm",
+    "rainfall_forecast_next_24h_mm",
+    "rainfall_intensity_trend",
+    "rainfall_runoff_index",
+    "saturation_proxy",
+    "compound_risk_index",
+]
+
+# All features (hydro + weather)
+ALL_FEATURE_NAMES = FEATURE_NAMES + WEATHER_FEATURE_NAMES
+
 # Logging
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_LEVEL = "INFO"
+
+# Weather Integration Configuration
+WEATHER_ENABLED = True  # Enable weather-aware features
+GFS_FETCH_TIMEOUT_SECONDS = 15  # Max time to fetch GFS data
+GFS_CACHE_VALIDITY_HOURS = 3  # Cache GFS for 3 hours
+IMD_CACHE_VALIDITY_HOURS = 24  # Cache IMD for 24 hours
+WEATHER_FETCH_FAIL_SAFE = True  # Continue if weather fetch fails
