@@ -269,6 +269,13 @@ class DemoFloodPredictionPipeline:
             logger.info("[DEMO MODE] No real MEDIUM/HIGH alerts detected. Activating demo mode...")
             self.demo_mode_active = True
             
+            # Store real values before forcing
+            predictions['real_risk_score'] = predictions['risk_score'].copy()
+            predictions['real_risk_level'] = predictions['risk_tier_name'].copy()
+            predictions['real_distance_to_danger'] = predictions['distance_to_danger'].copy()
+            predictions['real_rate_of_rise'] = predictions['rate_of_rise_3h'].copy()
+            predictions['real_current_level'] = predictions['current_level'].copy()
+            
             # Sort by risk_score to find highest risk stations
             predictions_sorted = predictions.sort_values('risk_score', ascending=False)
             

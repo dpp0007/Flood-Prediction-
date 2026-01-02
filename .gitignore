@@ -33,6 +33,7 @@ env/
 *.swo
 *~
 .DS_Store
+*.json
 
 # Data and outputs (keep structure, ignore generated files)
 data/raw/*.csv

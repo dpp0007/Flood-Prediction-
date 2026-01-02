@@ -450,8 +450,9 @@ class OutputManager:
         warning_prob = float(row.get('warning_probability', 0.0))
         risk_tier = str(row.get('risk_tier_name', 'unknown')).lower()
         
-        # Determine flood probability (use warning probability)
-        flood_probability = warning_prob
+        # Determine flood probability (use risk_score, not warning_probability)
+        # risk_score is more reliable as it's the continuous risk prediction
+        flood_probability = risk_score
         
         # Determine risk level
         if risk_tier == 'high':
@@ -511,11 +512,17 @@ class OutputManager:
             }
         }
         
+        # Add real values to metadata if in demo mode
+        if demo_mode and row.get('real_risk_score') is not None:
+            prediction_json['metadata']['real_risk_score'] = round(float(row.get('real_risk_score', 0)), 4)
+            prediction_json['metadata']['real_risk_level'] = str(row.get('real_risk_level', 'UNKNOWN')).upper()
+        
         return prediction_json
     
     def _generate_explanations(self, row: pd.Series, risk_level: str) -> List[str]:
         """
         Generate human-readable explanations.
+        Uses REAL feature data for explanations (not forced demo values).
         
         Args:
             row: Prediction row
@@ -527,50 +534,76 @@ class OutputManager:
         explanations = []
         
         risk_score = float(row.get('risk_score', 0.0))
-        warning_prob = float(row.get('warning_probability', 0.0))
         distance_to_danger = float(row.get('distance_to_danger', 0.0))
+        distance_to_warning = float(row.get('distance_to_warning', 0.0))
         rate_of_rise = float(row.get('rate_of_rise_3h', 0.0))
+        current_level = float(row.get('current_level', 0.0))
+        
+        # Use REAL values if in demo mode (for honest explanations)
+        if row.get('demo_mode'):
+            distance_to_danger = float(row.get('real_distance_to_danger', distance_to_danger))
+            rate_of_rise = float(row.get('real_rate_of_rise', rate_of_rise))
+            current_level = float(row.get('real_current_level', current_level))
         
         # Explanation 1: Risk level summary
         if risk_level == 'HIGH':
             explanations.append(
-                f"HIGH FLOOD RISK: Risk score {risk_score:.1%} with {warning_prob:.1%} warning probability."
+                f"HIGH FLOOD RISK: Risk score {risk_score:.1%}. Immediate action required."
             )
         elif risk_level == 'MEDIUM':
             explanations.append(
-                f"MODERATE FLOOD RISK: Risk score {risk_score:.1%} with {warning_prob:.1%} warning probability."
+                f"MODERATE FLOOD RISK: Risk score {risk_score:.1%}. Monitor water levels closely."
             )
         else:
             explanations.append(
-                f"LOW FLOOD RISK: Risk score {risk_score:.1%} with {warning_prob:.1%} warning probability."
+                f"LOW FLOOD RISK: Risk score {risk_score:.1%}. Situation under control."
             )
         
         # Explanation 2: Distance to danger
-        if distance_to_danger < 0.5:
-            explanations.append(
-                f"CRITICAL: Water level is only {distance_to_danger:.2f}m below danger threshold."
-            )
-        elif distance_to_danger < 1.0:
-            explanations.append(
-                f"WARNING: Water level is {distance_to_danger:.2f}m below danger threshold."
-            )
+        if distance_to_danger > 0:
+            if distance_to_danger < 0.5:
+                explanations.append(
+                    f"CRITICAL: Water level is only {distance_to_danger:.2f}m below danger threshold."
+                )
+            elif distance_to_danger < 1.0:
+                explanations.append(
+                    f"WARNING: Water level is {distance_to_danger:.2f}m below danger threshold."
+                )
+            elif distance_to_danger < 2.0:
+                explanations.append(
+                    f"CAUTION: Water level is {distance_to_danger:.2f}m below danger threshold."
+                )
+            else:
+                explanations.append(
+                    f"Water level is {distance_to_danger:.2f}m below danger threshold."
+                )
         else:
             explanations.append(
-                f"Water level is {distance_to_danger:.2f}m below danger threshold."
+                f"Water level is at or above danger threshold (distance: {distance_to_danger:.2f}m)."
             )
         
         # Explanation 3: Rate of rise
         if rate_of_rise > 0.15:
             explanations.append(
-                f"RAPID RISE: Water level rising at {rate_of_rise:.3f}m/hour."
+                f"RAPID RISE: Water level rising at {rate_of_rise:.3f}m/hour. High risk of flooding."
             )
         elif rate_of_rise > 0.05:
             explanations.append(
                 f"Moderate rise: Water level rising at {rate_of_rise:.3f}m/hour."
             )
+        elif rate_of_rise > 0.01:
+            explanations.append(
+                f"Slow rise: Water level rising at {rate_of_rise:.3f}m/hour."
+            )
         else:
             explanations.append(
-                f"Water level change: {rate_of_rise:.3f}m/hour."
+                f"Water level stable or falling (change: {rate_of_rise:.3f}m/hour)."
+            )
+        
+        # Explanation 4: Current level context
+        if current_level > 0:
+            explanations.append(
+                f"Current water level: {current_level:.2f}m."
             )
         
         return explanations

@@ -184,6 +184,12 @@ class FloodPredictor:
             results['risk_tier'] = risk_tiers
             results['risk_tier_name'] = results['risk_tier'].apply(self._tier_to_name)
         
+        # Add feature columns for explanations
+        feature_cols = ['distance_to_danger', 'rate_of_rise_3h', 'current_level', 'distance_to_warning']
+        for col in feature_cols:
+            if col in features.columns:
+                results[col] = features[col].values
+        
         logger.info(f"Predictions complete. Shape: {results.shape}")
         
         return results
